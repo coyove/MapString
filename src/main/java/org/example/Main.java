@@ -7,10 +7,9 @@ import java.lang.invoke.*;
 import java.lang.reflect.Field;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.ToIntBiFunction;
 
 public class Main {
-    public static class FibMap<V> {
+    public static class HashMapString<V> implements Map<String, V> {
         static final boolean FIB_HASH = true;
 
         static class Slot<V> {
@@ -42,14 +41,25 @@ public class Main {
                 mark = 0;
             }
 
-            public void add(String key, V value) {
+            public boolean add(String key, V value) {
+                byte[] b = (byte[])VALUE.get(key);
+                if (Arrays.equals(this.key, b)) {
+                    this.value = value;
+                    return false;
+                }
                 if (overflow == null) {
                     overflow = (Slot<V>[])new Slot<?>[1];
                 } else {
+                    for (Slot<V> o : overflow) {
+                        if (Arrays.equals(o.key, b)) {
+                            o.value = value;
+                            return false;
+                        }
+                    }
                     overflow = Arrays.copyOf(overflow, overflow.length + 1);
                 }
                 overflow[overflow.length - 1] = new Slot<>(key, value);
-                Arrays.sort(overflow, (a, b) -> Arrays.compare(a.key, b.key));
+                return true;
             }
 
             public int size() {
@@ -60,9 +70,10 @@ public class Main {
         private final Node<V>[] entries;
         private final int shift;
         private final static Node<?> empty = new Node<>();
+        private int count = 0;
 
         @SuppressWarnings("unchecked")
-        public FibMap(Map<String, V> map) {
+        public HashMapString(Map<String, V> map) {
             if (FIB_HASH) {
                 shift = Long.numberOfLeadingZeros((long) map.size() - 1);
                 entries = new Node[1 << (64 - shift)];
@@ -70,10 +81,8 @@ public class Main {
                 shift = Long.numberOfLeadingZeros((long) map.size() - 1) - 32;
                 entries = new Node[1 << (32 - shift)];
             }
-            Arrays.fill(entries, empty);
-            for (var e : map.entrySet()) {
-                put(e.getKey(), e.getValue());
-            }
+            clear();
+            putAll(map);
 
             // for (int i = 0; i < entries.length; i++) {
             //     var e = entries[i];
@@ -85,8 +94,7 @@ public class Main {
             // }
 
             Map<Integer, Integer> count = new HashMap<>();
-            for (int i = 0; i < entries.length; i++) {
-                var e = entries[i];
+            for (Node<V> e : entries) {
                 int n = e == empty ? 0 : e.size();
                 count.put(n, count.getOrDefault(n, 0) + 1);
             }
@@ -94,21 +102,90 @@ public class Main {
                 System.out.println(shift + " " + e.getKey() + ": " + e.getValue());
         }
 
-        public void put(String key, V value) {
+        @Override
+        public int size() {
+            return count;
+        }
+
+        @Override
+        public boolean isEmpty() {
+            return count == 0;
+        }
+
+        @Override
+        public boolean containsKey(Object key) {
+            return get(key) != null;
+        }
+
+        @Override
+        public boolean containsValue(Object value) {
+            throw new RuntimeException("not implemented");
+        }
+
+        public V put(String key, V value) {
+            V old = get(key);
+            put0(key, value);
+            return old;
+        }
+
+        public void put0(String key, V value) {
+            if (key == null) // || key.isEmpty())
+                throw new IllegalArgumentException("key");
+            if (value == null)
+                throw new IllegalArgumentException("value");
             int i = fibHash(key.hashCode(), shift);
             if (entries[i] == empty) {
                 entries[i] = new Node<>(key, value);
+                count++;
             } else {
-                entries[i].add(key, value);
+                if (entries[i].add(key, value))
+                    count++;
             }
             entries[i].mark |= 1L << (key.hashCode() & 0x3F);
         }
 
-        public V get(String key) {
+        @Override
+        public V remove(Object key) {
+            throw new RuntimeException("not implemented");
+        }
+
+        @Override
+        public void putAll(Map<? extends String, ? extends V> m) {
+            for (var e : m.entrySet()) {
+                put0(e.getKey(), e.getValue());
+            }
+        }
+
+        @Override
+        public void clear() {
+            Arrays.fill(entries, empty);
+            count = 0;
+        }
+
+        @Override
+        public Set<String> keySet() {
+            return Set.of();
+        }
+
+        @Override
+        public Collection<V> values() {
+            return List.of();
+        }
+
+        @Override
+        public Set<Entry<String, V>> entrySet() {
+            return Set.of();
+        }
+
+        @Override
+        public V get(Object key) {
+            if (key == null) // || ((String)key).isEmpty())
+                throw new IllegalArgumentException("key");
             int h = key.hashCode();
             int i = fibHash(h, shift);
             Node<V> e = entries[i];
-            if ((e.mark & (1L << (h & 0x3F))) == 0) return null;
+            if ((e.mark & (1L << (h & 0x3F))) == 0)
+                return null;
             byte[] k = (byte[])VALUE.get(key);
             if (e.hash == h && Arrays.equals(k, e.key))
                 return e.value;
@@ -206,10 +283,11 @@ public class Main {
         for (int i = 0; i < 10240; i++) {
             src.put(("" + i).repeat(100).substring(0, 50), i);
         }
+        src.put("", -1);
         System.out.println("size: " + src.size() + "\n\n");
 
         var m = new ConcurrentHashMap<>(src);
-        var sl = new FibMap<>(src);
+        var sl = new HashMapString<>(src);
         org.eclipse.collections.impl.map.mutable.ConcurrentHashMap<String, Integer> em = new org.eclipse.collections.impl.map.mutable.ConcurrentHashMap<>();
         em.putAll(src);
 
@@ -255,16 +333,18 @@ public class Main {
                 }
                 slctr += System.nanoTime() - start;
 
-                // start = System.nanoTime();
-                // for (String k : keys) {
-                //     // dumb += FibMap.hashString(k, 1);
-                //     em.get(k);
-                // }
-                // emctr += System.nanoTime() - start;
+                start = System.nanoTime();
+                for (String k : keys) {
+                    // dumb += FibMap.hashString(k, 1);
+                    for (int j = 0; j < 100; j++) {
+                        em.get(k);
+                    }
+                }
+                emctr += System.nanoTime() - start;
                 bestsl = Math.min(slctr / 100, bestsl);
                 bestm = Math.min(mctr / 100, bestm);
                 bestem = Math.min(emctr / 100, bestem);
-                System.out.print("\r" + bestsl + " " + bestm + " " + emctr);
+                System.out.print("\r" + bestsl + " " + bestm + " " + bestem);
             }
         } catch (Throwable e) {
         }
