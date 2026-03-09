@@ -10,15 +10,10 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class Main {
     public static class HashMapString<V> implements Map<String, V> {
-        static final boolean FIB_HASH = true;
-
         static class Slot<V> {
             byte[] key;
             V value;
             int hash;
-
-            Slot() {
-            }
 
             Slot(String key, V value) {
                 this.key = (byte[])VALUE.get(key);
@@ -31,16 +26,12 @@ public class Main {
             long mark;
             Slot<V>[] overflow;
 
-            Node() {
-                super();
-                mark = 0;
-            }
-
             Node(String key, V value) {
                 super(key, value);
                 mark = 0;
             }
 
+            @SuppressWarnings("unchecked")
             public boolean add(String key, V value) {
                 byte[] b = (byte[])VALUE.get(key);
                 if (Arrays.equals(this.key, b)) {
@@ -69,19 +60,19 @@ public class Main {
 
         private final Node<V>[] entries;
         private final int shift;
-        private final static Node<?> empty = new Node<>();
         private int count = 0;
 
         @SuppressWarnings("unchecked")
+        public HashMapString(int capacity) {
+            int s= Long.numberOfLeadingZeros((long) capacity - 1);
+            if (1 << (64 - s) < capacity * 3 / 2)
+                s--;
+            entries = new Node[1 << (64 - (shift = s))];
+            count = 0;
+        }
+
         public HashMapString(Map<String, V> map) {
-            if (FIB_HASH) {
-                shift = Long.numberOfLeadingZeros((long) map.size() - 1);
-                entries = new Node[1 << (64 - shift)];
-            } else {
-                shift = Long.numberOfLeadingZeros((long) map.size() - 1) - 32;
-                entries = new Node[1 << (32 - shift)];
-            }
-            clear();
+            this(map.size());
             putAll(map);
 
             // for (int i = 0; i < entries.length; i++) {
@@ -95,7 +86,7 @@ public class Main {
 
             Map<Integer, Integer> count = new HashMap<>();
             for (Node<V> e : entries) {
-                int n = e == empty ? 0 : e.size();
+                int n = e == null ? 0 : e.size();
                 count.put(n, count.getOrDefault(n, 0) + 1);
             }
             for (var e : count.entrySet())
@@ -134,14 +125,14 @@ public class Main {
             if (value == null)
                 throw new IllegalArgumentException("value");
             int i = fibHash(key.hashCode(), shift);
-            if (entries[i] == empty) {
+            if (entries[i] == null) {
                 entries[i] = new Node<>(key, value);
                 count++;
             } else {
                 if (entries[i].add(key, value))
                     count++;
+                entries[i].mark |= 1L << (key.hashCode() & 0x3F);
             }
-            entries[i].mark |= 1L << (key.hashCode() & 0x3F);
         }
 
         @Override
@@ -158,7 +149,6 @@ public class Main {
 
         @Override
         public void clear() {
-            Arrays.fill(entries, empty);
             count = 0;
         }
 
@@ -184,12 +174,12 @@ public class Main {
             int h = key.hashCode();
             int i = fibHash(h, shift);
             Node<V> e = entries[i];
-            if ((e.mark & (1L << (h & 0x3F))) == 0)
+            if (e == null)
                 return null;
             byte[] k = (byte[])VALUE.get(key);
             if (e.hash == h && Arrays.equals(k, e.key))
                 return e.value;
-            if (e.overflow != null) {
+            if ((e.mark & (1L << (h & 0x3F))) != 0) {
                 for (Slot<V> o : e.overflow) {
                     if (o.hash == h && Arrays.equals(k, o.key))
                         return o.value;
@@ -221,12 +211,8 @@ public class Main {
         }
 
         public static int fibHash(int h, int n) {
-            if (FIB_HASH) {
-                long l = h * -7046029254386353131L;
-                return (int) (l >>> n);
-            }
-            h = h ^ (h >>> 16);
-            return h >>> (n);
+            long l = h * -7046029254386353131L;
+            return (int) (l >>> n);
         }
 
         private static final VarHandle VALUE;
@@ -280,7 +266,7 @@ public class Main {
     public static void main(String[] args) throws Throwable {
         var src = new HashMap<String, Integer>();
         var rnd = new Random();
-        for (int i = 0; i < 10240; i++) {
+        for (int i = 0; i < 4096; i++) {
             src.put(("" + i).repeat(100).substring(0, 50), i);
         }
         src.put("", -1);
@@ -292,8 +278,10 @@ public class Main {
         em.putAll(src);
 
         for (var e : m.entrySet()) {
-            if (!Objects.equals(sl.get(e.getKey()), e.getValue())) {
-                throw new RuntimeException("mismatch");
+            var a = sl.get(e.getKey());
+            var b = e.getValue();
+            if (!Objects.equals(a, b)) {
+                throw new RuntimeException("mismatch " + a + " " + b);
             }
         }
 
@@ -347,6 +335,7 @@ public class Main {
                 System.out.print("\r" + bestsl + " " + bestm + " " + bestem);
             }
         } catch (Throwable e) {
+            System.out.println(e);
         }
     }
 
