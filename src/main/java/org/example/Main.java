@@ -23,8 +23,8 @@ public class Main {
         }
 
         static class Node<V> extends Slot<V> {
-            long mark;
-            Slot<V>[] overflow;
+            transient long mark;
+            transient Slot<V>[] overflow;
 
             Node(String key, V value) {
                 super(key, value);
@@ -32,25 +32,28 @@ public class Main {
             }
 
             @SuppressWarnings("unchecked")
-            public boolean add(String key, V value) {
+            synchronized V add(String key, V value) {
                 byte[] b = (byte[])VALUE.get(key);
                 if (Arrays.equals(this.key, b)) {
+                    V old = this.value;
                     this.value = value;
-                    return false;
+                    return old;
                 }
                 if (overflow == null) {
                     overflow = (Slot<V>[])new Slot<?>[1];
                 } else {
                     for (Slot<V> o : overflow) {
                         if (Arrays.equals(o.key, b)) {
+                            V old = this.value;
                             o.value = value;
-                            return false;
+                            return old;
                         }
                     }
                     overflow = Arrays.copyOf(overflow, overflow.length + 1);
                 }
                 overflow[overflow.length - 1] = new Slot<>(key, value);
-                return true;
+                mark |= 1L << (key.hashCode() & 0x3F);
+                return null;
             }
 
             public int size() {
@@ -74,16 +77,9 @@ public class Main {
         public HashMapString(Map<String, V> map) {
             this(map.size());
             putAll(map);
+        }
 
-            // for (int i = 0; i < entries.length; i++) {
-            //     var e = entries[i];
-            //     int next = (i + 1) & (entries.length - 1);
-            //     if (e != null && e.size() == 2 && entries[next] == null) {
-            //         entries[next] = e.next;
-            //         e.next = null;
-            //     }
-            // }
-
+        public void debugDistribution() {
             Map<Integer, Integer> count = new HashMap<>();
             for (Node<V> e : entries) {
                 int n = e == null ? 0 : e.size();
@@ -125,14 +121,12 @@ public class Main {
             if (value == null)
                 throw new IllegalArgumentException("value");
             int i = fibHash(key.hashCode(), shift);
-            if (entries[i] == null) {
-                entries[i] = new Node<>(key, value);
+            if (entries[i] == null && nodeCAS(entries, i, null, new Node<>(key, value))) {
                 count++;
-            } else {
-                if (entries[i].add(key, value))
-                    count++;
-                entries[i].mark |= 1L << (key.hashCode() & 0x3F);
+                return;
             }
+            if (entries[i].add(key, value) == null)
+                count++;
         }
 
         @Override
@@ -188,9 +182,10 @@ public class Main {
             return null;
         }
 
-        private static Unsafe U;
-        private static int ABASE;
-        private static int ASHIFT;
+        private static final Unsafe U;
+        private static final int ABASE;
+        private static final int ASHIFT;
+        private static final VarHandle VALUE;
 
         static {
             try {
@@ -206,8 +201,8 @@ public class Main {
             }
         }
 
-        static <V> Node<V> entryAt(Node<V>[] entries, int i) {
-            return (Node<V>)U.getObject(entries, ((long)i << ASHIFT) + ABASE);
+        static <V> boolean nodeCAS(Node<V>[] entries, int i, Node<V> expected, Node<V> x) {
+            return U.compareAndSwapObject(entries, ((long)i << ASHIFT) + ABASE, expected, x);
         }
 
         public static int fibHash(int h, int n) {
@@ -215,7 +210,6 @@ public class Main {
             return (int) (l >>> n);
         }
 
-        private static final VarHandle VALUE;
         // private static final MethodHandle MISMATCH;
         // private static final ToIntBiFunction<byte[], byte[]> mismatch;
 
@@ -266,77 +260,75 @@ public class Main {
     public static void main(String[] args) throws Throwable {
         var src = new HashMap<String, Integer>();
         var rnd = new Random();
-        for (int i = 0; i < 4096; i++) {
-            src.put(("" + i).repeat(100).substring(0, 50), i);
-        }
-        src.put("", -1);
-        System.out.println("size: " + src.size() + "\n\n");
-
-        var m = new ConcurrentHashMap<>(src);
-        var sl = new HashMapString<>(src);
-        org.eclipse.collections.impl.map.mutable.ConcurrentHashMap<String, Integer> em = new org.eclipse.collections.impl.map.mutable.ConcurrentHashMap<>();
-        em.putAll(src);
-
-        for (var e : m.entrySet()) {
-            var a = sl.get(e.getKey());
-            var b = e.getValue();
-            if (!Objects.equals(a, b)) {
-                throw new RuntimeException("mismatch " + a + " " + b);
+        long bestm = 1000000000;
+        long bestsl = 1000000000;
+        long bestem = 1000000000;
+        for (int zzz = 0; ; zzz++) {
+            src.clear();
+            for (int i = 0; i < 4096; i++) {
+                src.put(("" + i).repeat(100).substring(0, 50), i);
             }
-        }
+            src.put("", -1);
+            src.put("Ea", -2);
+            src.put("FB", -3);
 
-        var kkk = new ArrayList<>(m.keySet());
+            var m = new ConcurrentHashMap<>(src);
+            var sl = new HashMapString<>(src);
+            org.eclipse.collections.impl.map.mutable.ConcurrentHashMap<String, Integer> em = new org.eclipse.collections.impl.map.mutable.ConcurrentHashMap<>();
+            em.putAll(src);
 
-        try {
-            long bestm = 1000000000;
-            long bestsl = 1000000000;
-            long bestem = 1000000000;
-            for (int zzz = 0; ; zzz++) {
-                long mctr = 0, slctr = 0, emctr = 0;
+            if (zzz == 0)
+                sl.debugDistribution();
 
-                int times = 10000;
-                String[] keys = new String[times];
-                for (int i = 0; i < times; i++) {
-                    keys[i] = "" + (i % src.size());
-                    if (rnd.nextInt(1) == 0) {
-                        keys[i] = kkk.get(rnd.nextInt(kkk.size()));
-                    }
+            for (var e : m.entrySet()) {
+                var a = sl.get(e.getKey());
+                var b = e.getValue();
+                if (!Objects.equals(a, b)) {
+                    throw new RuntimeException("mismatch " + a + " " + b);
                 }
-
-                long start = System.nanoTime();
-                for (String k : keys) {
-                    // dumb += FibMap.hashString(k);
-                    for (int j = 0; j < 100; j++) {
-                        m.get(k);
-                    }
-                }
-                mctr += System.nanoTime() - start;
-
-                start = System.nanoTime();
-                for (String k : keys) {
-                    // dumb += FibMap.hashString(k, 1);
-                    for (int j = 0; j < 100; j++) {
-                        sl.get(k);
-                    }
-                }
-                slctr += System.nanoTime() - start;
-
-                start = System.nanoTime();
-                for (String k : keys) {
-                    // dumb += FibMap.hashString(k, 1);
-                    for (int j = 0; j < 100; j++) {
-                        em.get(k);
-                    }
-                }
-                emctr += System.nanoTime() - start;
-                bestsl = Math.min(slctr / 100, bestsl);
-                bestm = Math.min(mctr / 100, bestm);
-                bestem = Math.min(emctr / 100, bestem);
-                System.out.print("\r" + bestsl + " " + bestm + " " + bestem);
             }
-        } catch (Throwable e) {
-            System.out.println(e);
+            var kkk = new ArrayList<>(m.keySet());
+            long mctr = 0, slctr = 0, emctr = 0;
+
+            int times = 10000;
+            String[] keys = new String[times];
+            for (int i = 0; i < times; i++) {
+                keys[i] = "" + (i % src.size());
+                if (rnd.nextInt(1) == 0) {
+                    keys[i] = kkk.get(rnd.nextInt(kkk.size()));
+                }
+            }
+
+            long start = System.nanoTime();
+            for (String k : keys) {
+                // dumb += FibMap.hashString(k);
+                for (int j = 0; j < 100; j++) {
+                    m.get(k);
+                }
+            }
+            mctr += System.nanoTime() - start;
+
+            start = System.nanoTime();
+            for (String k : keys) {
+                // dumb += FibMap.hashString(k, 1);
+                for (int j = 0; j < 100; j++) {
+                    sl.get(k);
+                }
+            }
+            slctr += System.nanoTime() - start;
+
+            start = System.nanoTime();
+            for (String k : keys) {
+                // dumb += FibMap.hashString(k, 1);
+                for (int j = 0; j < 100; j++) {
+                    em.get(k);
+                }
+            }
+            emctr += System.nanoTime() - start;
+            bestsl = Math.min(slctr / 100, bestsl);
+            bestm = Math.min(mctr / 100, bestm);
+            bestem = Math.min(emctr / 100, bestem);
+            System.out.print("\r" + bestsl + " " + bestm + " " + bestem);
         }
     }
-
 }
