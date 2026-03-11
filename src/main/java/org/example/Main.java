@@ -25,8 +25,10 @@ public class Main {
             static Class<Node1>[] NODE_CLASSES = new Class[] { Node1.class, Node2.class };
 
             @SuppressWarnings("unchecked,rawtypes")
-            static synchronized void createNodeNext() throws Exception {
+            static synchronized void createNodeNext(int expected) throws Exception {
                 int n = NODE_CLASSES.length + 1;
+                if (n > expected)
+                    return;
                 ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
                 String superName = NODE_CLASSES[NODE_CLASSES.length - 1].getName().replaceAll("\\.", "/");
                 String baseName = Node.class.getName().replaceAll("\\.", "/");
@@ -161,7 +163,7 @@ public class Main {
             static Node1 createNodeN(int n) {
                 try {
                     while (NODE_CLASSES.length < n)
-                        createNodeNext();
+                        createNodeNext(n);
                     return NODE_CLASSES[n - 1].getDeclaredConstructor().newInstance();
                 } catch (Exception e) {
                     throw new RuntimeException(e);
@@ -191,6 +193,14 @@ public class Main {
 
             void copySuper(Node<V> s, byte[] key, int hash, V value) {
                 throw new RuntimeException("Node1");
+            }
+
+            void markKey(long old, Object key) {
+                mark = old | (1L << (key.hashCode() & 0x3E));
+                if (size() == 2)
+                    mark |= 0xAAAAAAAAAAAAAAAAL;
+                else
+                    mark &= 0x5555555555555555L;
             }
 
             V findKey(int h, byte[] key) {
@@ -251,11 +261,11 @@ public class Main {
 
         private transient final Node1<V>[] entries;
         private final int shift;
-        private AtomicInteger count = new AtomicInteger(0);
+        private final AtomicInteger count = new AtomicInteger(0);
 
         @SuppressWarnings("unchecked")
         public HashMapString(int capacity) {
-            int s= Long.numberOfLeadingZeros((long) capacity - 1);
+            int s = Long.numberOfLeadingZeros((long) capacity - 1);
             if (1 << (64 - s) < capacity * 3 / 2)
                 s--;
             entries = new Node1[1 << (64 - (shift = s))];
@@ -318,11 +328,7 @@ public class Main {
                     return old;
                 Node1<V> e2 = Node.createNodeN(e.size() + 1);
                 e2.copySuper(e, b, key.hashCode(), value);
-                e2.mark = e.mark | (1L << (key.hashCode() & 0x3E));
-                if (e2.size() == 2)
-                    e2.mark |= 0xAAAAAAAAAAAAAAAAL;
-                else
-                    e2.mark &= 0x5555555555555555L;
+                e2.markKey(e.mark, key);
 
                 if (nodeCAS(entries, i, e, e2))
                     break;
@@ -350,6 +356,11 @@ public class Main {
                 if (old != null)
                     count.addAndGet(-old.size());
             }
+        }
+
+        public void clearUnsafe() {
+            Arrays.fill(entries, null);
+            count.set(0);
         }
 
         @Override
@@ -389,41 +400,55 @@ public class Main {
             };
         }
 
-        private static final Unsafe U;
-        private static final int ABASE;
-        private static final int ASHIFT;
+        // private static final Unsafe U;
+        // private static final int ABASE;
+        // private static final int ASHIFT;
         private static final VarHandle VALUE;
+        private static final VarHandle ARRAY;
 
         static {
             try {
-                Field f = Unsafe.class.getDeclaredField("theUnsafe");
-                f.setAccessible(true);
-                U = (Unsafe) f.get(null);
-                ABASE = U.arrayBaseOffset(Node1[].class);
-                ASHIFT = 31 - Integer.numberOfLeadingZeros(U.arrayIndexScale(Node1[].class));
+                // Field f = Unsafe.class.getDeclaredField("theUnsafe");
+                // f.setAccessible(true);
+                // U = (Unsafe) f.get(null);
+                // ABASE = U.arrayBaseOffset(Node1[].class);
+                // ASHIFT = 31 - Integer.numberOfLeadingZeros(U.arrayIndexScale(Node1[].class));
                 MethodHandles.Lookup lookup = MethodHandles.privateLookupIn(String.class, MethodHandles.lookup());
                 VALUE = lookup.findVarHandle(String.class, "value", byte[].class);
+                ARRAY = MethodHandles.arrayElementVarHandle(Node1[].class);
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         }
 
         static <V> boolean nodeCAS(Node1<V>[] entries, int i, Node1<V> expected, Node1<V> x) {
-            return U.compareAndSwapObject(entries, ((long)i << ASHIFT) + ABASE, expected, x);
+            // return U.compareAndSwapObject(entries, ((long)i << ASHIFT) + ABASE, expected, x);
+            return ARRAY.compareAndSet(entries, i, expected, x);
         }
 
         static <V> Node1<V> nodeSwap(Node1<V>[] entries, int i, Node1<V> x) {
-            return (Node1<V>) U.getAndSetObject(entries, ((long)i << ASHIFT) + ABASE, x);
+            // return (Node1<V>) U.getAndSetObject(entries, ((long)i << ASHIFT) + ABASE, x);
+            return (Node1<V>) ARRAY.getAndSet(entries, i, x);
         }
 
         static <V> Node1<V> nodeAt(Node1<V>[] entries, int i) {
-            return (Node1<V>) U.getObject(entries, ((long)i << ASHIFT) + ABASE);
+            // return (Node1<V>) U.getObject(entries, ((long)i << ASHIFT) + ABASE);
+            return (Node1<V>) ARRAY.get(entries, i);
         }
 
         public static int fibHash(int h, int n) {
             long l = h * -7046029254386353131L;
             return (int) (l >>> n);
         }
+    }
+
+    static <V> V measure(String title, Supplier<V> f) {
+        long start = System.nanoTime();
+        for (int i = 0; i < 100; i++)
+            f.get();
+        V res = f.get();
+        System.out.println(title + " " + (System.nanoTime() - start) / 100 / 1000000 + "ms");
+        return res;
     }
 
     public static void main(String[] args) throws Throwable {
@@ -440,9 +465,9 @@ public class Main {
         src.put("Ea", -2);
         src.put("FB", -3);
 
-        var m = new ConcurrentHashMap<>(src);
-        var sl = new HashMapString<>(src);
-        var em = new HashMap<>(src);
+        var m = measure("CHM", () -> new ConcurrentHashMap<>(src));
+        var sl = measure("MapString", () -> new HashMapString<>(src));
+        var em = measure("HM", () -> new HashMap<>(src));
         sl.debugDistribution();
 
         for (var e : m.entrySet()) {
