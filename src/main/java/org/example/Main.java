@@ -6,7 +6,6 @@ import org.objectweb.asm.Label;
 import org.objectweb.asm.MethodVisitor;
 
 import java.lang.invoke.*;
-import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -384,11 +383,6 @@ public class Main {
             Map<Integer, Integer> count = new HashMap<>();
             for (Node1<V> e : entries) {
                 int n = e == null ? 0 : e.size();
-                if (e != null) {
-                    for (int i = 1; i <= e.size(); i++) {
-                        System.out.println("iter: " + new String(Node.getKey(e, i)));
-                    }
-                }
                 count.put(n, count.getOrDefault(n, 0) + 1);
             }
             for (var e : count.entrySet())
@@ -494,76 +488,165 @@ public class Main {
 
         @Override
         public Set<String> keySet() {
-            return Set.of();
+            return new SetAndIter<>(this, SetAndIter.Type.Key);
         }
 
         @Override
         public Collection<V> values() {
-            return List.of();
+            return new SetAndIter<>(this, SetAndIter.Type.Value);
         }
 
         @Override
         public Set<Entry<String, V>> entrySet() {
-            return Set.of();
+            return new SetAndIter<>(this, SetAndIter.Type.Entry);
         }
 
-        // static class Iterator<V, S> implements java.util.Iterator<V> {
-        //     final NodeSet<S> set;
-        //     int index, nodeIndex, peekIndex, peekNodeIndex;
+        static class SetAndIter<V, S> implements java.util.Iterator<S>, Set<S> {
+            enum Type { Key, Value, Entry }
+            enum Peeked { None, OK, End }
+            final HashMapString<V> map;
+            final Type type;
+            int index = 0;
+            int nodeIndex = 0;
+            int peekIndex = 0;
+            int peekNodeIndex = 0;
+            Peeked peeked = Peeked.None;
 
-        //     Iterator(NodeSet<S> s) {
-        //         this.set = s;
-        //         this.index = this.nodeIndex = 0;
-        //         this.peekIndex = this.peekNodeIndex = -1;
-        //     }
+            SetAndIter(HashMapString<V> m, Type t) {
+                this.type = t;
+                this.map = m;
+            }
 
-        //     @Override
-        //     public boolean hasNext() {
-        //         return peek(index, nodeIndex);
-        //     }
+            @Override
+            public boolean hasNext() {
+                return peek(index, nodeIndex);
+            }
 
-        //     @Override
-        //     @SuppressWarnings("unchecked")
-        //     public V next() {
-        //         peek(index, nodeIndex);
-        //         index = peekIndex;
-        //         nodeIndex = peekNodeIndex;
-        //         Node1<S> e = nodeAt(set.map.entries, index);
-        //         return (V)switch (set.type) {
-        //             case Key -> new String(Node.getKey(e, nodeIndex));
-        //             case Value -> Node.getValue(e, nodeIndex);
-        //             case Entry -> new Map.Entry<String, S>();
-        //         }
-        //     }
+            @Override
+            @SuppressWarnings("unchecked")
+            public S next() {
+                if (!peek(index, nodeIndex))
+                    throw new IllegalStateException();
+                index = peekIndex;
+                nodeIndex = peekNodeIndex + 1;
+                peeked = Peeked.None;
+                Node1<V> e = nodeAt(map.entries, index);
+                int ni = peekNodeIndex + 1;
+                return (S) switch (this.type) {
+                    case Key -> new String(Node.getKey(e, ni));
+                    case Value -> Node.getValue(e, ni);
+                    case Entry -> new Map.Entry<String, V>() {
+                        @Override
+                        public String getKey() {
+                            return new String(Node.getKey(e, ni));
+                        }
 
-        //     @SuppressWarnings("unchecked")
-        //     private boolean peek(int index, int nodeIndex) {
-        //         if (peekIndex >= 0) {
-        //             index = peekIndex;
-        //             nodeIndex = peekNodeIndex;
-        //         }
-        //         while (true) {
-        //             if (index >= set.map.entries.length) {
-        //                 peekIndex = index;
-        //                 peekNodeIndex = nodeIndex;
-        //                 return false;
-        //             }
-        //             Node1<S> e = nodeAt(set.map.entries, index);
-        //             if (nodeIndex >= e.size()) {
-        //                 index++;
-        //                 nodeIndex = 0;
-        //                 continue;
-        //             }
-        //             S v = (S) Node.getValue(e, nodeIndex);
-        //             if (v != null) {
-        //                 peekIndex = index;
-        //                 peekNodeIndex = nodeIndex;
-        //                 return true;
-        //             }
-        //             nodeIndex++;
-        //         }
-        //     }
-        // }
+                        @Override
+                        public V getValue() {
+                            return (V) Node.getValue(e, ni);
+                        }
+
+                        @Override
+                        public V setValue(V value) {
+                            throw new UnsupportedOperationException();
+                        }
+                    };
+                };
+            }
+
+            @SuppressWarnings("unchecked")
+            private boolean peek(int i, int ni) {
+                if (peeked != Peeked.None)
+                    return peeked == Peeked.OK;
+                while (true) {
+                    if (i >= map.entries.length) {
+                        peekIndex = i;
+                        peekNodeIndex = ni;
+                        peeked = Peeked.End;
+                        return false;
+                    }
+                    Node1<V> e = nodeAt(map.entries, i);
+                    if (e == null || ni >= e.size()) {
+                        i++;
+                        ni = 0;
+                        continue;
+                    }
+                    V v = (V) Node.getValue(e, ni + 1);
+                    if (v != null) {
+                        peekIndex = i;
+                        peekNodeIndex = ni;
+                        peeked = Peeked.OK;
+                        return true;
+                    }
+                    ni++;
+                }
+            }
+
+            @Override
+            public int size() {
+                return map.size();
+            }
+
+            @Override
+            public boolean isEmpty() {
+                return map.isEmpty();
+            }
+
+            @Override
+            public boolean contains(Object o) {
+                return map.containsValue(o);
+            }
+
+            @Override
+            public Iterator<S> iterator() {
+                return new SetAndIter<>(map, type);
+            }
+
+            @Override
+            public Object[] toArray() {
+                return new Object[0];
+            }
+
+            @Override
+            public <T> T[] toArray(T[] a) {
+                return null;
+            }
+
+            @Override
+            public boolean add(S v) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public boolean remove(Object o) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public boolean containsAll(Collection<?> c) {
+                return false;
+            }
+
+            @Override
+            public boolean addAll(Collection<? extends S> c) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public boolean retainAll(Collection<?> c) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public boolean removeAll(Collection<?> c) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public void clear() {
+                throw new UnsupportedOperationException();
+            }
+        }
 
         @Override
         public V get(Object key) {
@@ -666,6 +749,14 @@ public class Main {
             if (!Objects.equals(a, b))
                 throw new RuntimeException("mismatch " + a + " " + b);
         }
+
+        for (var e : sl.entrySet()) {
+            var a = m.get(e.getKey());
+            var b = e.getValue();
+            if (!Objects.equals(a, b))
+                throw new RuntimeException("mismatch2 " + a + " " + b);
+        }
+
         if (sl.size() != m.size())
             throw new RuntimeException("mismatch " + sl.size() + " " + m.size());
 
