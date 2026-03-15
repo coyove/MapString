@@ -629,7 +629,7 @@ public class Main {
             final Type type;
             int index = 0;
             int nodeIndex = 1;
-            long peeked = 0;
+            Node1<V> peeked = null;
 
             SetAndIter(HashMapString<V> m, Type t) {
                 super();
@@ -639,16 +639,16 @@ public class Main {
 
             @Override
             public boolean hasNext() {
-                for (int i = index, ni = nodeIndex; peeked == 0; ) {
-                    if (i >= map.entries.length)
+                while (peeked == null) {
+                    if (index >= map.entries.length)
                         return false;
-                    Node1<V> e = nodeAt(map.entries, i);
-                    if (e != null && ni <= e.size()) {
-                        peeked = ((long) i << 32) | ni;
+                    Node1<V> e = nodeAt(map.entries, index);
+                    if (e != null && nodeIndex <= e.size()) {
+                        peeked = e.asNode1(nodeIndex);
                         return true;
                     }
-                    i++;
-                    ni = 1;
+                    index++;
+                    nodeIndex = 1;
                 }
                 return true;
             }
@@ -656,12 +656,11 @@ public class Main {
             @Override
             @SuppressWarnings("unchecked")
             public S next() {
-                if (peeked == 0)
+                if (peeked == null)
                     throw new IllegalStateException();
-                index = (int)(peeked >>> 32);
-                Node1<V> e = nodeAt(map.entries, index).asNode1((int)peeked);
-                nodeIndex = (int)peeked + 1;
-                peeked = 0;
+                Node1<V> e = peeked;
+                peeked = null;
+                nodeIndex++;
                 return (S) switch (this.type) {
                     case Key -> new String(e.key1);
                     case Value -> e.value1;
