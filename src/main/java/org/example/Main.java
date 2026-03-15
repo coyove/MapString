@@ -15,9 +15,7 @@ import static org.objectweb.asm.Opcodes.*;
 
 public class Main {
     public static class HashMapString<V> implements Map<String, V> {
-        static class Node<V> {
-            final static Object FILL_HOLE = new Object();
-
+        static abstract class Node<V> {
             @SuppressWarnings("rawtypes")
             static class Clazz {
                 final static MethodHandles.Lookup lookup = MethodHandles.lookup();
@@ -93,43 +91,12 @@ public class Main {
                 mv.visitMaxs(0, 0);
                 mv.visitEnd();
 
-                // Object setKeyValue(byte[] key, int hash, Object value)
-                mv = cw.visitMethod(ACC_PUBLIC | ACC_SYNCHRONIZED, "setKeyValue", "([BILjava/lang/Object;)Ljava/lang/Object;", null, null);
+                // Object findSetKeyValue(byte[] key, Object value)
+                mv = cw.visitMethod(ACC_PUBLIC, "findSetKeyValue", "([BLjava/lang/Object;)Ljava/lang/Object;", null, null);
                 mv.visitCode();
                 for (int i = 1; i <= n; i++) {
                     Label nextKeyLabel = new Label();
-                    Label fillHoleLabel = new Label();
-
-                    if (i < n) {
-                        Label nonEmptyLabel = new Label();
-                        mv.visitVarInsn(ALOAD, 0);
-                        mv.visitFieldInsn(GETFIELD, className, "value" + i, "Ljava/lang/Object;"); // load this.valueX
-                        mv.visitJumpInsn(IFNONNULL, nonEmptyLabel);
-
-                        @FunctionalInterface
-                        interface Foo {
-                            void apply(MethodVisitor m, String c, String d, String e);
-                        }
-                        Foo exchange = (m, a, b, desc) -> {
-                            m.visitVarInsn(ALOAD, 0);
-                            m.visitVarInsn(ALOAD, 0);
-                            m.visitFieldInsn(GETFIELD, className, a, desc);
-                            m.visitVarInsn(ALOAD, 0);
-                            m.visitVarInsn(ALOAD, 0);
-                            m.visitFieldInsn(GETFIELD, className, b, desc);
-                            m.visitFieldInsn(PUTFIELD, className, a, desc);
-                            m.visitFieldInsn(PUTFIELD, className, b, desc);
-                        };
-                        exchange.apply(mv, "key" + i, "key" + n, "[B");
-                        exchange.apply(mv, "hash" + i, "hash" + n, "I");
-                        exchange.apply(mv, "value" + i, "value" + n, "Ljava/lang/Object;");
-
-                        mv.visitLabel(nonEmptyLabel);
-                    }
-
-                    mv.visitVarInsn(ALOAD, 0);
-                    mv.visitFieldInsn(GETFIELD, className, "value" + i, "Ljava/lang/Object;"); // load this.valueX
-                    mv.visitVarInsn(ASTORE, 4);
+                    Label updateValueLabel = new Label();
 
                     mv.visitVarInsn(ALOAD, 0);
                     mv.visitFieldInsn(GETFIELD, className, "key" + i, "[B"); // load this.keyX
@@ -137,74 +104,128 @@ public class Main {
                     mv.visitMethodInsn(INVOKESTATIC, "java/util/Arrays", "equals", "([B[B)Z", false);
                     mv.visitJumpInsn(IFEQ, nextKeyLabel);
 
+                    mv.visitVarInsn(ALOAD, 2);
+                    mv.visitJumpInsn(IFNONNULL, updateValueLabel);
+                    mv.visitLdcInsn(i);
+                    mv.visitMethodInsn(INVOKESTATIC, "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", false);
+                    mv.visitInsn(ARETURN);
+
+                    mv.visitLabel(updateValueLabel);
                     mv.visitVarInsn(ALOAD, 0);
-                    mv.visitVarInsn(ALOAD, 3);
+                    mv.visitFieldInsn(GETFIELD, className, "value" + i, "Ljava/lang/Object;"); // load this.valueX
+                    mv.visitVarInsn(ASTORE, 3);
+
+                    mv.visitVarInsn(ALOAD, 0);
+                    mv.visitVarInsn(ALOAD, 2);
                     mv.visitFieldInsn(PUTFIELD, className, "value" + i, "Ljava/lang/Object;"); // store this.valueX
 
-                    mv.visitVarInsn(ALOAD, 4);
-                    mv.visitJumpInsn(IFNULL, fillHoleLabel);
-                    mv.visitVarInsn(ALOAD, 4);
-                    mv.visitInsn(ARETURN);
-                    mv.visitLabel(fillHoleLabel);
-                    mv.visitFieldInsn(GETSTATIC, baseName, "FILL_HOLE", "Ljava/lang/Object;");
+                    mv.visitVarInsn(ALOAD, 3);
                     mv.visitInsn(ARETURN);
 
                     mv.visitLabel(nextKeyLabel);
                 }
 
+                // return value == null ? Integer.valueOf(0) : null;
                 Label exitLabel = new Label();
-                mv.visitVarInsn(ALOAD, 4);
+                mv.visitVarInsn(ALOAD, 2);
                 mv.visitJumpInsn(IFNONNULL, exitLabel);
-
-                mv.visitVarInsn(ALOAD, 0);
-                mv.visitVarInsn(ALOAD, 1);
-                mv.visitFieldInsn(PUTFIELD, className, "key" + n, "[B");
-                mv.visitVarInsn(ALOAD, 0);
-                mv.visitVarInsn(ILOAD, 2);
-                mv.visitFieldInsn(PUTFIELD, className, "hash" + n, "I");
-                mv.visitVarInsn(ALOAD, 0);
-                mv.visitVarInsn(ALOAD, 3);
-                mv.visitFieldInsn(PUTFIELD, className, "value" + n, "Ljava/lang/Object;");
-                mv.visitVarInsn(ALOAD, 0);
-                mv.visitFieldInsn(GETSTATIC, baseName, "FILL_HOLE", "Ljava/lang/Object;");
+                mv.visitLdcInsn(0);
+                mv.visitMethodInsn(INVOKESTATIC, "java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", false);
                 mv.visitInsn(ARETURN);
-
                 mv.visitLabel(exitLabel);
                 mv.visitInsn(ACONST_NULL);
                 mv.visitInsn(ARETURN);
                 mv.visitMaxs(0, 0);
                 mv.visitEnd();
 
-                // void copySuper(Node s, byte[] key, int hash, Object value)
-                mv = cw.visitMethod(ACC_PUBLIC, "copySuper", "(L" + baseName + ";[BILjava/lang/Object;)V", null, null);
+                // void copy(Node s, int count)
+                mv = cw.visitMethod(ACC_PUBLIC, "copy", "(L" + baseName + ";I)V", null, null);
                 mv.visitCode();
-                mv.visitVarInsn(ALOAD, 1);
-                mv.visitTypeInsn(CHECKCAST, superName);
-                mv.visitVarInsn(ASTORE, 6);
-                for (int i = 1; i <= n - 1; i++) {
+                for (int i = 1; i <= n; i++) {
+                    // ASM: if (i > count) return;
+                    Label ok = new Label();
+                    mv.visitLdcInsn(i);
+                    mv.visitVarInsn(ILOAD, 2);
+                    mv.visitJumpInsn(IF_ICMPLE, ok);
+                    mv.visitInsn(RETURN);
+                    mv.visitLabel(ok);
+
+                    mv.visitVarInsn(ALOAD, 1);
+                    mv.visitTypeInsn(CHECKCAST, baseName + i);
+                    mv.visitVarInsn(ASTORE, 3);
+
                     mv.visitVarInsn(ALOAD, 0);
-                    mv.visitVarInsn(ALOAD, 6);
-                    mv.visitFieldInsn(GETFIELD, superName, "key" + i, "[B");
+                    mv.visitVarInsn(ALOAD, 3);
+                    mv.visitFieldInsn(GETFIELD, baseName + i, "key" + i, "[B");
                     mv.visitFieldInsn(PUTFIELD, className, "key" + i, "[B");
 
                     mv.visitVarInsn(ALOAD, 0);
-                    mv.visitVarInsn(ALOAD, 6);
-                    mv.visitFieldInsn(GETFIELD, superName, "hash" + i, "I");
+                    mv.visitVarInsn(ALOAD, 3);
+                    mv.visitFieldInsn(GETFIELD, baseName + i, "hash" + i, "I");
                     mv.visitFieldInsn(PUTFIELD, className, "hash" + i, "I");
+                    // this.markKey
+                    mv.visitVarInsn(ALOAD, 0);
+                    mv.visitVarInsn(ALOAD, 3);
+                    mv.visitFieldInsn(GETFIELD, baseName + i, "hash" + i, "I");
+                    mv.visitMethodInsn(INVOKEVIRTUAL, baseName, "markKey", "(I)V", false);
 
                     mv.visitVarInsn(ALOAD, 0);
-                    mv.visitVarInsn(ALOAD, 6);
-                    mv.visitFieldInsn(GETFIELD, superName, "value" + i, "Ljava/lang/Object;");
+                    mv.visitVarInsn(ALOAD, 3);
+                    mv.visitFieldInsn(GETFIELD, baseName + i, "value" + i, "Ljava/lang/Object;");
                     mv.visitFieldInsn(PUTFIELD, className, "value" + i, "Ljava/lang/Object;");
                 }
+                mv.visitInsn(RETURN);
+                mv.visitMaxs(0, 0);
+                mv.visitEnd();
+
+                // void copy1(Node1 s)
+                mv = cw.visitMethod(ACC_PUBLIC, "copy1", "(L" + baseName + "1;)V", null, null);
+                mv.visitCode();
+                mv.visitVarInsn(ALOAD, 1);
+                mv.visitTypeInsn(CHECKCAST, superName);
+                mv.visitVarInsn(ASTORE, 2);
+                for (int i = 2; i <= n; i++) {
+                    mv.visitVarInsn(ALOAD, 2);
+                    mv.visitVarInsn(ALOAD, 0);
+                    mv.visitFieldInsn(GETFIELD, className, "key" + i, "[B");
+                    mv.visitFieldInsn(PUTFIELD, superName, "key" + (i - 1), "[B");
+
+                    mv.visitVarInsn(ALOAD, 2);
+                    mv.visitVarInsn(ALOAD, 0);
+                    mv.visitFieldInsn(GETFIELD, className, "hash" + i, "I");
+                    mv.visitFieldInsn(PUTFIELD, superName, "hash" + (i - 1), "I");
+                    // s.markKey
+                    mv.visitVarInsn(ALOAD, 2);
+                    mv.visitVarInsn(ALOAD, 2);
+                    mv.visitFieldInsn(GETFIELD, superName, "hash" + (i - 1), "I");
+                    mv.visitMethodInsn(INVOKEVIRTUAL, baseName, "markKey", "(I)V", false);
+
+                    mv.visitVarInsn(ALOAD, 2);
+                    mv.visitVarInsn(ALOAD, 0);
+                    mv.visitFieldInsn(GETFIELD, className, "value" + i, "Ljava/lang/Object;");
+                    mv.visitFieldInsn(PUTFIELD, superName, "value" + (i - 1), "Ljava/lang/Object;");
+                }
+                mv.visitInsn(RETURN);
+                mv.visitMaxs(0, 0);
+                mv.visitEnd();
+
+                // void setLastKeyValue(byte[] key, int hash, Object value)
+                mv = cw.visitMethod(ACC_PUBLIC, "setLastKeyValue", "([BILjava/lang/Object;)V", null, null);
+                mv.visitCode();
                 mv.visitVarInsn(ALOAD, 0);
-                mv.visitVarInsn(ALOAD, 2);
+                mv.visitVarInsn(ALOAD, 1);
                 mv.visitFieldInsn(PUTFIELD, className, "key" + n, "[B");
+
                 mv.visitVarInsn(ALOAD, 0);
-                mv.visitVarInsn(ILOAD, 3);
+                mv.visitVarInsn(ILOAD, 2);
                 mv.visitFieldInsn(PUTFIELD, className, "hash" + n, "I");
                 mv.visitVarInsn(ALOAD, 0);
-                mv.visitVarInsn(ALOAD, 4);
+                mv.visitVarInsn(ALOAD, 0);
+                mv.visitVarInsn(ILOAD, 2);
+                mv.visitMethodInsn(INVOKEVIRTUAL, baseName, "markKey", "(I)V", false);
+
+                mv.visitVarInsn(ALOAD, 0);
+                mv.visitVarInsn(ALOAD, 3);
                 mv.visitFieldInsn(PUTFIELD, className, "value" + n, "Ljava/lang/Object;");
                 mv.visitInsn(RETURN);
                 mv.visitMaxs(0, 0);
@@ -245,13 +266,21 @@ public class Main {
                 return NODE_CLASSES[i - 1].value.get(n);
             }
 
-            volatile long mark;
+            long mark;
+
+            abstract int size();
+
+            void markKey(int hashCode) {
+                if (size() == 1)
+                    return;
+                mark |= (size() == 2 ? 3L : 1L) << (hashCode & 0x3E);
+            }
         }
 
         static class Node1<V> extends Node<V> {
-            volatile byte[] key1;
-            volatile int hash1;
-            volatile V value1;
+            byte[] key1;
+            int hash1;
+            V value1;
 
             Node1() {
             }
@@ -262,46 +291,50 @@ public class Main {
                 value1 = value;
             }
 
+            @Override
             int size() {
                 return 1;
-            }
-
-            void copySuper(Node<V> s, byte[] key, int hash, V value) {
-                throw new RuntimeException("can't call Node1::copySuper");
-            }
-
-            synchronized void markKey(Object key) {
-                markKey(mark, key);
-            }
-
-            void markKey(long old, Object key) {
-                // Node1 doesn't have mark
             }
 
             V findKey(int h, byte[] key) {
                 throw new RuntimeException("can't call Node1::findKey");
             }
 
-            synchronized V setKeyValue(byte[] key, int hash, V value) {
+            void copy(Node<V> s, int count) {
+                if (Math.min(count, Math.min(size(), s.size())) == 1) {
+                    Node1<V> n = (Node1<V>) s;
+                    key1 = n.key1;
+                    hash1 = n.hash1;
+                    value1 = n.value1;
+                }
+            }
+
+            void copy1(Node1<V> s) {
+                throw new RuntimeException("BUG: unreachable");
+            }
+
+            Object findSetKeyValue(byte[] key, V value) {
                 if (Arrays.equals(key, key1)) {
+                    if (value == null)
+                        return 1;
                     V old = value1;
                     value1 = value;
-                    return old == null ? (V)Node.FILL_HOLE : old;
+                    return old;
                 }
-                if (value1 == null) {
-                    key1 = key;
-                    hash1 = hash;
-                    value1 = value;
-                    return (V) Node.FILL_HOLE;
-                }
-                return null;
+                return value == null ? 0 : null;
+            }
+
+            void setLastKeyValue(byte[] key, int hash, V value) {
+                key1 = key;
+                hash1 = hash;
+                value1 = value;
             }
         }
 
         static class Node2<V> extends Node1<V> {
-            volatile byte[] key2;
-            volatile int hash2;
-            volatile V value2;
+            byte[] key2;
+            int hash2;
+            V value2;
 
             @Override
             V findKey(int h, byte[] key) {
@@ -310,55 +343,55 @@ public class Main {
             }
 
             @Override
-            int size() {
-                return 2;
+            void copy(Node<V> s, int count) {
+                switch (Math.min(count, Math.min(size(), s.size()))) {
+                    case 2:
+                        Node2<V> n2 = (Node2<V>) s;
+                        key2 = n2.key2;
+                        hash2 = n2.hash2;
+                        value2 = n2.value2;
+                        markKey(hash2);
+                        // fallthrough
+                    case 1:
+                        Node1<V> n1 = (Node1<V>) s;
+                        key1 = n1.key1;
+                        hash1 = n1.hash1;
+                        value1 = n1.value1;
+                        markKey(hash1);
+                }
             }
 
             @Override
-            @SuppressWarnings("unchecked")
-            synchronized V setKeyValue(byte[] key, int hash, V value) {
+            void copy1(Node1<V> s) {
+                s.key1 = key2;
+                s.hash1 = hash2;
+                s.value1 = value2;
+                s.markKey(hash2);
+            }
+
+            @Override
+            Object findSetKeyValue(byte[] key, V value) {
                 if (Arrays.equals(key, key2)) {
+                    if (value == null)
+                        return 2;
                     V old = value2;
                     value2 = value;
-                    return old == null ? (V)Node.FILL_HOLE : old;
+                    return old;
                 }
-                if (Arrays.equals(key, key1)) {
-                    V old = value1;
-                    value1 = value;
-                    return old == null ? (V)Node.FILL_HOLE : old;
-                }
-                if (value2 == null) {
-                    key2 = key;
-                    hash2 = hash;
-                    value2 = value;
-                    return (V) Node.FILL_HOLE;
-                }
-                if (value1 == null) {
-                    key1 = key;
-                    hash1 = hash;
-                    value1 = value;
-                    return (V) Node.FILL_HOLE;
-                }
-                return null;
+                return super.findSetKeyValue(key, value);
             }
 
             @Override
-            void copySuper(Node<V> s, byte[] key, int hash, V value) {
-                key1 = ((Node1<V>)s).key1;
-                hash1 = ((Node1<V>)s).hash1;
-                value1 = ((Node1<V>)s).value1;
+            void setLastKeyValue(byte[] key, int hash, V value) {
                 key2 = key;
                 hash2 = hash;
                 value2 = value;
+                markKey(hash2);
             }
 
             @Override
-            void markKey(long old, Object key) {
-                mark = old | (1L << (key.hashCode() & 0x3E));
-                if (size() == 2)
-                    mark |= 0xAAAAAAAAAAAAAAAAL;
-                else
-                    mark &= 0x5555555555555555L;
+            int size() {
+                return 2;
             }
         }
 
@@ -410,52 +443,66 @@ public class Main {
         }
 
         @Override
+        @SuppressWarnings("unchecked")
         public V put(String key, V value) {
             if (key == null || value == null)
                 throw new NullPointerException();
             int i = fibHash(key.hashCode(), shift);
             byte[] b = (byte[])VALUE.get(key);
+            V old = null;
             while (true) {
-                Node1<V> e = entries[i];
-                if (e == null) {
-                    if (nodeCAS(entries, i, e, new Node1<>(key, value))) {
+                Node1<V> n = nodeAt(entries, i);
+                if (n == null) {
+                    if (nodeCAS(entries, i, n, new Node1<>(key, value))) {
                         count.incrementAndGet();
                         return null;
                     }
                     continue;
                 }
-                V old = e.setKeyValue(b, key.hashCode(), value);
-                if (old == Node.FILL_HOLE) {
-                    e.markKey(key);
-                    break;
+                Node1<V> n2;
+                if ((int) n.findSetKeyValue(b, null) == 0) {
+                    n2 = Node.createNodeN(n.size() + 1);
+                    n2.copy(n, n.size());
+                    n2.setLastKeyValue(b, key.hashCode(), value);
+                } else {
+                    n2 = Node.createNodeN(n.size());
+                    n2.copy(n, n.size());
+                    old = (V) n2.findSetKeyValue(b, value);
                 }
-                if (old != null)
-                    return old;
-                Node1<V> e2 = Node.createNodeN(e.size() + 1);
-                e2.copySuper(e, b, key.hashCode(), value);
-                e2.markKey(e.mark, key);
-
-                if (nodeCAS(entries, i, e, e2))
+                if (nodeCAS(entries, i, n, n2))
                     break;
             }
-            count.incrementAndGet();
-            return null;
+            if (old == null)
+                count.incrementAndGet();
+            return old;
         }
 
         @Override
+        @SuppressWarnings("unchecked")
         public V remove(Object key) {
             if (key == null)
-                throw new IllegalArgumentException("key");
+                throw new NullPointerException();
             int i = fibHash(key.hashCode(), shift);
             byte[] b = (byte[])VALUE.get(key);
-            Node1<V> e = entries[i];
-            if (e == null) {
-                return null;
+            V old = null;
+            while (true) {
+                Node1<V> n = nodeAt(entries, i);
+                if (n == null)
+                    return null;
+                int idx = (int) n.findSetKeyValue(b, null);
+                if (idx == 0)
+                    return null;
+                Node1<V> n2 = null;
+                if (n.size() > 1) {
+                    old = n.findKey(key.hashCode(), b);
+                    n2 = Node.createNodeN(n.size() - 1);
+                    n.copy1(n2);
+                    n2.copy(n, idx - 1);
+                }
+                if (nodeCAS(entries, i, n, n2))
+                    break;
             }
-            V old = e.setKeyValue(b, key.hashCode(), null);
-            if (old == null || old == Node.FILL_HOLE)
-                return null;
-            count.addAndGet(-1);
+            count.decrementAndGet();
             return old;
         }
 
